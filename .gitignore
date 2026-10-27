@@ -11,4 +11,4 @@ dist/
 results/
 output/
 data/private/
-.env
+.envsamples/real/

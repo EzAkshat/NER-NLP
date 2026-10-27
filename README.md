@@ -84,7 +84,7 @@ model ID.
 
 ## Supported formats
 
-`.txt`, `.md`, `.html`, `.docx`, and `.pdf`.
+`.txt`, `.md`, `.html` (also `.htm`), `.docx`, and `.pdf`.
 
 Default safeguards (the code reads them from `Limits`): files up to 25 MB, 5,000,000
 extracted characters, and 1,000 PDF pages, plus archive checks for DOCX files.
