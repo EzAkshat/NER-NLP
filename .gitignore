@@ -1,14 +1,33 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python bytecode and caches
 __pycache__/
-*.egg-info/
+*.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and build output
+*.egg-info/
 build/
 dist/
+.eggs/
 
-# models, caches, generated output, private data
-*.bin
-.flair/
-results/
-output/
-data/private/
-.envsamples/real/
+# Private or local data (real documents and their answer keys)
+samples/real/
+
+# Generated outputs and scratch files
+out_*.json
+example.txt
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
