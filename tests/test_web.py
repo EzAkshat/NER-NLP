@@ -57,3 +57,20 @@ def test_unsupported_format_is_422(client):
 def test_empty_file_is_422(client):
     response = client.post("/analyze", files={"file": ("empty.txt", b"", "text/plain")})
     assert response.status_code == 422
+    
+def test_analyze_pasted_text(client):
+    response = client.post("/analyze-text", json={"text": "Jane Smith visited Berlin."})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["result"]["document"]["source_name"] == "pasted text"
+    assert data["result"]["total_mentions"] == 2
+    for m in data["result"]["mentions"]:
+        assert data["text"][m["start"] : m["end"]] == m["text"]
+
+
+def test_blank_pasted_text_is_422(client):
+    assert client.post("/analyze-text", json={"text": "   \n  "}).status_code == 422
+
+
+def test_pasted_text_requires_text_field(client):
+    assert client.post("/analyze-text", json={}).status_code == 422

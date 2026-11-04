@@ -1,4 +1,4 @@
-"""Command-line interface: ner-app analyze FILE [--format text|json] ..."""
+"""Command-line interface: ner-app analyze FILE [--backend flair|gliner] ..."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ import sys
 from collections.abc import Sequence
 
 from ner_app.errors import NerError
+from ner_app.inference.factory import BACKENDS, build_ner, parse_labels
 from ner_app.inference.flair_ner import DEFAULT_MODEL_ID, InferenceSettings
+from ner_app.inference.gliner_ner import GLINER_CHUNK_OVERLAP, GLINER_CHUNK_SIZE
 from ner_app.models import AnalysisResult
 from ner_app.pipeline import analyze_file
 
@@ -26,8 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("file", help="Path to a .txt, .md, .html, .docx or .pdf file.")
     analyze.add_argument("--format", choices=["text", "json"], default="text",
                          help="Output format (default: text).")
-    analyze.add_argument("--model", default=DEFAULT_MODEL_ID,
-                         help=f"Flair model ID (default: {DEFAULT_MODEL_ID}).")
+    analyze.add_argument("--backend", choices=BACKENDS, default="flair",
+                         help="NER backend (default: flair).")
+    analyze.add_argument("--model", default=None,
+                         help="Model ID (default depends on the backend).")
+    analyze.add_argument("--labels", default=None,
+                         help="gliner only: 'NAME=Prompt,NAME2=Prompt 2'. "
+                              "A bare name uses itself as the prompt.")
+    analyze.add_argument("--threshold", type=float, default=0.5,
+                         help="gliner only: minimum score, 0 to 1 (default: 0.5).")
     analyze.add_argument("--chunk-size", type=int, default=None,
                          help="Characters per inference chunk.")
     analyze.add_argument("--chunk-overlap", type=int, default=None,
@@ -65,23 +74,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if not args.model.strip():
+    if args.model is not None and not args.model.strip():
         parser.error("--model cannot be empty")
+    if not 0.0 <= args.threshold <= 1.0:
+        parser.error("--threshold must be between 0 and 1")
+
+    if args.backend in ("gliner", "gliner-nuner"):
+        default_size, default_overlap = GLINER_CHUNK_SIZE, GLINER_CHUNK_OVERLAP
+    else:
+        default_size, default_overlap = InferenceSettings.chunk_size, InferenceSettings.chunk_overlap
     try:
         settings = InferenceSettings(
-            chunk_size=args.chunk_size if args.chunk_size is not None
-            else InferenceSettings.chunk_size,
-            chunk_overlap=args.chunk_overlap if args.chunk_overlap is not None
-            else InferenceSettings.chunk_overlap,
+            chunk_size=args.chunk_size if args.chunk_size is not None else default_size,
+            chunk_overlap=args.chunk_overlap if args.chunk_overlap is not None else default_overlap,
         )
+        labels = parse_labels(args.labels) if args.backend == "gliner" else None
     except ValueError as exc:
         parser.error(str(exc))  # exits with status 2
 
-    # Keep Flair's INFO logging out of the way so JSON output stays clean.
+    # Keep library INFO logging out of the way so JSON output stays clean.
     logging.getLogger("flair").setLevel(logging.WARNING)
 
     try:
-        result = analyze_file(args.file, model_id=args.model, settings=settings)
+        if args.backend in ("gliner", "gliner-nuner"):
+            result = analyze_file(
+                args.file,
+                ner_factory=lambda: build_ner(args.backend, args.model, settings, labels, args.threshold),
+            )
+        else:
+            result = analyze_file(
+                args.file, model_id=args.model or DEFAULT_MODEL_ID, settings=settings
+            )
     except NerError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.exit_code

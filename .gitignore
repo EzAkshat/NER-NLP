@@ -31,3 +31,16 @@ Thumbs.db
 
 # Local environment files
 .env
+.venv-train/
+data/nuner*/
+models/
+results/
+
+# Local working files and outputs
+demo/
+suite_results.txt
+flair_hard1.txt
+gliner_hard1_t03.txt
+*.log
+*.safetensors
+*.pt

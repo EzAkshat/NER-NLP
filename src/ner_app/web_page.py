@@ -13,10 +13,15 @@ main{max-width:1000px;margin:0 auto;padding:2rem 1rem 4rem}
 h1{font-size:1.5rem;margin:0}
 .sub{color:var(--muted);margin:.25rem 0 1.5rem}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:1.25rem;margin-bottom:1rem}
+.tabs{display:flex;gap:.4rem;margin-bottom:1rem}
+.tab{border-radius:999px;padding:.3rem .9rem}
+.tab.active{background:var(--accent);color:var(--accent-text);border-color:var(--accent);font-weight:600}
 #drop{border:2px dashed var(--line);border-radius:12px;padding:2rem 1rem;text-align:center;cursor:pointer;transition:.15s}
 #drop:hover,#drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
 #drop strong{display:block;font-size:1.05rem}
 #drop span{color:var(--muted);font-size:.9rem}
+textarea{width:100%;min-height:200px;resize:vertical;font:14px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;padding:.8rem;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text)}
+textarea:focus{outline:2px solid var(--accent);outline-offset:1px}
 .row{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;margin-top:1rem}
 button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--text);padding:.45rem .9rem}
 button:hover{border-color:var(--accent)}
@@ -47,24 +52,38 @@ td.t{white-space:normal}
 .hidden{display:none!important}
 </style></head><body><main>
 <h1>ner-app</h1>
-<p class="sub">Local named entity recognition. Files stay on this machine and are not stored.</p>
+<p class="sub">Local named entity recognition. Input stays on this machine and is not stored.</p>
 
 <div class="card">
- <div id="drop" tabindex="0">
-  <strong id="dropTitle">Drop a file here, or click to choose</strong>
-  <span>.txt  .md  .html  .docx  .pdf</span>
+ <div class="tabs">
+  <button id="tabFile" class="tab active">Upload file</button>
+  <button id="tabText" class="tab">Paste text</button>
  </div>
- <input type="file" id="file" class="hidden" accept=".txt,.md,.html,.htm,.docx,.pdf">
+
+ <div id="filePane">
+  <div id="drop" tabindex="0">
+   <strong id="dropTitle">Drop a file here, or click to choose</strong>
+   <span>.txt  .md  .html  .docx  .pdf</span>
+  </div>
+  <input type="file" id="file" class="hidden" accept=".txt,.md,.html,.htm,.docx,.pdf">
+ </div>
+
+ <div id="textPane" class="hidden">
+  <textarea id="pasted" placeholder="Paste or type text here..." spellcheck="false"></textarea>
+  <div class="note" id="count" style="margin-top:.3rem">0 characters. Ctrl+Enter to analyze.</div>
+ </div>
+
  <div class="row">
   <button id="go" class="primary" disabled>Analyze</button>
   <span id="status"></span>
  </div>
- <p class="note" style="margin-bottom:0">On CPU, expect roughly 10 seconds per 6,000 characters. Long files can take minutes.</p>
+ <p class="note" style="margin-bottom:0">On CPU, expect roughly 10 seconds per 6,000 characters. Long input can take minutes.</p>
 </div>
 
 <div id="out" class="hidden">
  <div class="card">
-  <h2 id="title" style="margin-top:0;font-size:1.1rem"></h2>
+  <h2 id="title" style="margin-top:0;margin-bottom:.1rem;font-size:1.1rem"></h2>
+  <div id="modelinfo" class="note" style="margin-bottom:.8rem"></div>
   <div id="warnings" class="banner warn hidden"></div>
   <div class="stats" id="stats"></div>
   <div class="note" style="margin-bottom:.4rem">Click a label to show or hide it.</div>
@@ -82,26 +101,39 @@ td.t{white-space:normal}
    <thead><tr><th>#</th><th>Label</th><th>Text</th><th>Offsets</th><th>Score</th></tr></thead>
    <tbody id="rows"></tbody>
   </table></div>
-  <p class="note" style="margin-bottom:0">Scores are model confidence estimates, not probabilities, and can be high for wrong predictions. Offsets refer to the extracted, normalized text, not the original file.</p>
+  <p class="note" style="margin-bottom:0">Scores are model confidence estimates, not probabilities, and can be high for wrong predictions. Offsets refer to the extracted, normalized text, not the original input.</p>
  </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const state = {data: null, hidden: new Set(), query: '', file: null};
+const state = {data: null, hidden: new Set(), query: '', file: null, mode: 'file'};
 let timer = null;
 
 function hue(label){ let h = 0; for (const c of label) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
 function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function setStatus(msg, cls){ $('status').textContent = msg; $('status').className = cls || ''; }
 
-// ---- file selection (all document text is inserted via textContent, never innerHTML)
+// ---- input modes (all document text is inserted via textContent, never innerHTML)
+function canGo(){ return state.mode === 'file' ? !!state.file : $('pasted').value.trim().length > 0; }
+function refreshGo(){ $('go').disabled = !canGo(); }
+function setMode(m){
+  state.mode = m;
+  $('tabFile').classList.toggle('active', m === 'file');
+  $('tabText').classList.toggle('active', m === 'text');
+  $('filePane').classList.toggle('hidden', m !== 'file');
+  $('textPane').classList.toggle('hidden', m !== 'text');
+  setStatus('', ''); refreshGo();
+  if (m === 'text') $('pasted').focus();
+}
+$('tabFile').onclick = () => setMode('file');
+$('tabText').onclick = () => setMode('text');
+
 function setFile(f){
   state.file = f || null;
   $('dropTitle').textContent = f ? f.name : 'Drop a file here, or click to choose';
-  $('go').disabled = !f;
-  setStatus('', '');
+  setStatus('', ''); refreshGo();
 }
-function setStatus(msg, cls){ $('status').textContent = msg; $('status').className = cls || ''; }
 $('drop').onclick = () => $('file').click();
 $('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') $('file').click(); };
 $('file').onchange = () => setFile($('file').files[0]);
@@ -109,21 +141,37 @@ $('file').onchange = () => setFile($('file').files[0]);
 ['dragleave','drop'].forEach(t => $('drop').addEventListener(t, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
 $('drop').addEventListener('drop', e => { if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]); });
 
+$('pasted').oninput = () => {
+  $('count').textContent = `${$('pasted').value.length.toLocaleString()} characters. Ctrl+Enter to analyze.`;
+  refreshGo();
+};
+$('pasted').onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canGo()) $('go').click(); };
+
 // ---- analyze
-function stopTimer(){ clearInterval(timer); $('go').disabled = !state.file; }
+function stopTimer(){ clearInterval(timer); refreshGo(); }
 $('go').onclick = async () => {
-  if (!state.file) return;
+  if (!canGo()) return;
   $('out').classList.add('hidden'); $('go').disabled = true;
   const t0 = Date.now();
   const tick = () => setStatus(`Analyzing... ${Math.round((Date.now() - t0) / 1000)}s`, '');
   tick(); timer = setInterval(tick, 1000);
-  const fd = new FormData(); fd.append('file', state.file);
   let resp;
-  try { resp = await fetch('/analyze', {method: 'POST', body: fd}); }
-  catch (e) { stopTimer(); setStatus('Could not reach the server.', 'err'); return; }
+  try {
+    if (state.mode === 'file') {
+      const fd = new FormData(); fd.append('file', state.file);
+      resp = await fetch('/analyze', {method: 'POST', body: fd});
+    } else {
+      resp = await fetch('/analyze-text', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: $('pasted').value})});
+    }
+  } catch (e) { stopTimer(); setStatus('Could not reach the server.', 'err'); return; }
   const data = await resp.json().catch(() => ({}));
   stopTimer();
-  if (!resp.ok) { setStatus(data.detail || ('Error ' + resp.status), 'err'); return; }
+  if (!resp.ok) {
+    setStatus(typeof data.detail === 'string' ? data.detail : ('Error ' + resp.status), 'err');
+    return;
+  }
   state.data = data; state.hidden = new Set(); state.query = ''; $('q').value = '';
   setStatus(`Done in ${Math.round((Date.now() - t0) / 1000)}s.`, '');
   render();
@@ -133,6 +181,7 @@ $('go').onclick = async () => {
 function render(){
   const r = state.data.result, doc = r.document;
   $('title').textContent = doc.source_name;
+  $('modelinfo').textContent = `${r.model.framework} ${r.model.framework_version} - ${r.model.model_id}`;
   const w = $('warnings');
   w.textContent = doc.warnings.map(x => `[${x.code}] ${x.message}`).join('\n');
   w.classList.toggle('hidden', doc.warnings.length === 0);
