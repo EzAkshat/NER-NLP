@@ -3,14 +3,16 @@
 A local, privacy-focused tool for English named entity recognition (NER). It reads a
 document, extracts its text, runs an NER model (Flair by default, or an optional
 GLiNER model), and reports each entity with its label and exact character offsets. It
-has a command-line interface and a local web interface. Nothing is sent to a remote
-service once the models have been downloaded.
+has a command-line interface and a local web interface. The application runs inference locally without sending the document to a remote NER
+service after the models are downloaded. Initial model and optional dataset downloads
+require network access; test with networking disabled if strict offline operation is required.
 
 ## Requirements
 
 - Python 3.13 (developed and tested on Python 3.13.7, Windows, CPU only).
   `pyproject.toml` allows Python 3.10 and later, but other versions are untested.
-- About 2 GB of disk space for the default model, plus the PyTorch install.
+- Roughly 2.2 GB of disk space for the default model weights (the published model
+  file is about 2.24 GB), plus room for PyTorch, caches, and dependencies.
 - Flair 0.15.x (tested with 0.15.1) and PyTorch (tested with 2.14.1).
 - Optional: GLiNER, for the `gliner` and `gliner-nuner` backends (see below).
 
@@ -31,7 +33,7 @@ You can combine extras, for example `pip install -e ".[web,gliner,dev]"`.
 
 The default model is `flair/ner-english-ontonotes-large`. It is downloaded
 automatically the first time you analyze a document and cached under `~/.flair`
-(about 2.1 GB on the machine it was tested on). Later runs reuse the cache.
+(about 2.1 GB on the tested machine). Later runs reuse the cache.
 
 ### Speed
 
@@ -43,9 +45,9 @@ Measured on a CPU-only Windows machine (no GPU):
 | Analysis | roughly 1.7 ms per character (about 10 seconds per 6,000 characters) |
 
 A one-page file takes a few seconds, a 17,000-character file about 30 seconds, and a
-long PDF can take many minutes. Chunk size had only a small effect on speed in a test
-on one 17,000-character file (about 23 seconds at 1,000 characters versus 30 seconds
-at 10,000), so the default was left unchanged.
+long PDF can take many minutes. In one 17,000-character test, the reported times
+were about 23 seconds using 1,000-character chunks and 30 seconds using
+10,000-character chunks. This is one measurement, not a general performance rule.
 
 ## Which engine runs
 
@@ -64,6 +66,39 @@ loads only its own model.
 
 On our small hand-made suite (see "Results so far") Flair found the most entities, so
 it remains the default.
+
+## How the models recognize entities
+
+The application handles **document extraction, normalization, overlapping windows,
+character-offset adjustment, and result grouping**. The inference backends do the
+actual named-entity recognition after receiving text; they do not parse PDFs or DOCX
+files themselves.
+
+- **Flair (`flair/ner-english-ontonotes-large`)** uses XLM-RoBERTa-large with FLERT
+  contextual embeddings. It predicts word-level BIOES tags over **18 fixed OntoNotes
+  entity types**, and converts those tags into entity spans. Its published training
+  configuration uses a linear head, **without an RNN or CRF**.
+- **Base GLiNER (`urchade/gliner_medium-v2.1`)** combines the requested label names and
+  text in a DeBERTa-v3-base encoder, scores candidate contiguous spans against the
+  labels, and filters them by threshold. It supports different label prompts without
+  retraining, though results depend on the label wording. Its published configuration
+  includes `max_len=384` and `max_width=12` (token-related, not character counts).
+- **Fine-tuned GLiNER (`gliner-nuner`)** keeps GLiNER's span-based architecture but uses
+  weights fine-tuned on NuNER examples mapped to ten project-specific labels.
+  Post-training thresholds and title stripping are application-level decisions.
+
+### Architecture diagrams
+
+![Flair architecture: tokenization, FLERT context, XLM-RoBERTa, BIOES tagging, and entity extraction](images/flair-architecture.png)
+
+*Flair: conceptual model pipeline, not a byte-for-byte tokenizer trace or a live model prediction.*
+
+![GLiNER architecture: dynamic label prompts, DeBERTa encoding, span scoring, and entity extraction](images/gliner-architecture.png)
+
+*GLiNER: conceptual span-scoring pipeline. Example score values and subword spellings are illustrative.*
+
+For the complete system design, model internals, datasets, training settings, and
+an explanation of evaluation metrics, see **[Architecture and Method](Architecture.md)**.
 
 ## Command-line usage
 
@@ -162,14 +197,17 @@ GLiNER lets the caller choose the labels at run time.
     (global 0.65, technology 0.55). A `--threshold` other than 0.5 overrides them.
   - Honorifics such as Dr. and Prof. are removed from person names.
 
-Measured results, with their limits:
+Measured results from the project's recorded tests (not cross-benchmark accuracy
+claims):
 
 - On a held-out part of the NuNER data, the base model scored F1 0.656 and the
   fine-tuned model 0.701. This measures agreement with the dataset's machine-written
   labels, which are incomplete, not real-world accuracy.
-- On our hand-made suite (76 gold entities), Flair found 68, the fine-tuned model 61
-  and the base model 57. The fine-tuned model missed several percentages and
-  quantities.
+- On our seven-document hand-made suite (76 gold entity mentions), Flair matched 68,
+  the fine-tuned model 61 and the base model 57 under the recorded comparison
+  protocol. The fine-tuned model missed several percentages and quantities.
+  The seven-document F1 comparison below used a **0.7 threshold** for the fine-tuned
+  model; this differs from its saved **0.65** global/**0.55** technology thresholds.
 
 ### Scripts for fine-tuning and evaluation (optional)
 
@@ -228,8 +266,12 @@ The gold file is a JSON list with one entry per occurrence:
 ```
 
 It prints precision, recall and F1 per label, plus lists of spurious and missed
-entities. Matching is strict: the label and the exact text must both match, and
-offsets are ignored, so it cannot tell which occurrence of a repeated entity was found.
+entities. In **this script**, a match requires exact entity text and label, but
+**ignores offsets**; repeated occurrences of the same text cannot always be
+unambiguously matched. This is **not** strict `(start, end, label)` span matching.
+The separate `scripts/suite_compare.py` comparison should be described using its
+own actual scoring implementation rather than assuming both scripts use identical
+matching rules.
 A span that differs by a leading "the" or a trailing period counts as one miss and
 one spurious entity. Using `--draft` biases scores upward, because it is easy to
 accept what the model already wrote, so say so when reporting such results.
@@ -240,12 +282,13 @@ These are small, informal checks, not an accuracy benchmark.
 
 | Document | Result | Reliability |
 |----------|--------|-------------|
-| News-style test text (32 entities, written for this test) | Strict F1 0.86 (precision 0.85, recall 0.88) | Low: the text is easy for this model, and the answer key was written by the same author. Treat it as an upper bound for clean news text. |
+| News-style test text (32 entities, written for this test) | Strict F1 0.86 (precision 0.85, recall 0.88) | Low: the text is easy for this model, and the answer key was written by the same author. It may overestimate performance on unseen text. |
 | Exam paper PDF (15 mentions) | Not scored. About 9 of 15 judged correct by eye. | Very low: an impression only. |
 | Design spec excerpt | Not scored | Not measured. |
 | Seven hand-made documents (76 gold entities, exact label and text match, titles stripped, labels mapped to the ten-label set) | Entities found: Flair 68 (F1 0.883), fine-tuned GLiNER 61 (F1 0.836, threshold 0.7), base GLiNER 57 (F1 0.814) | Low to moderate: small, written for this project, and its OntoNotes-style labels probably favour Flair. |
 
-Errors seen so far, all produced by the model and not by the extraction:
+Errors observed in project testing (they may originate in prediction, extraction,
+chunk boundaries, or post-processing; diagnose the intermediate text and spans):
 
 - `30 marks` labeled MONEY, and a course code labeled CARDINAL.
 - A name cut short (`Institute of Information Technology` without `Babu Madhav`).
@@ -260,8 +303,9 @@ Errors seen so far, all produced by the model and not by the extraction:
 - **Mention text can contain line breaks** from the source layout (for example
   `24 degrees\nCelsius` from a wrapped PDF line). The same entity with and without a
   line break is grouped as two different texts.
-- **Scores are not probabilities.** They are the models' confidence estimates and can
-  be very high for wrong predictions.
+- **Scores are not calibrated probabilities of correctness.** Flair uses
+  softmax-derived tag scores; GLiNER uses sigmoid-derived span/label scores. Either
+  can be very high for an incorrect prediction.
 - **Accuracy depends heavily on the text.** The default model is trained on news-style
   English. It is weaker on technical documents, exam papers, code-like text, and
   text with Indian names, institutions and currency formats.
@@ -270,7 +314,9 @@ Errors seen so far, all produced by the model and not by the extraction:
   The fine-tuned GLiNER backend has its own ten labels, with no separate percent or
   LOC label.
 - **GLiNER chunks are small** (1,000 characters by default) because the model reads a
-  limited number of tokens at once.
+  limited number of tokens at once. The published medium-v2.1 configuration has
+  `max_len=384`; a character window is **not** a guarantee that every input fits its
+  token limit, especially when label prompts also consume tokens.
 - **Chunking is by fixed character windows**, not word or sentence boundaries. Where
   chunks overlap, overlapping predictions are resolved by keeping the longest span,
   then the higher score. An entity longer than `--chunk-overlap` can still be split.
@@ -286,7 +332,9 @@ Errors seen so far, all produced by the model and not by the extraction:
 python -m pytest -q
 ```
 
-92 tests passed at the last full run. The project layout is:
+**92 tests passed** at the last full project test run. The tests use fake models,
+so this is a test of application behavior, not a benchmark of model accuracy.
+The project layout is:
 
 - `src/ner_app/ingestion/`: file loading, extraction and normalization.
 - `src/ner_app/inference/`: Flair and GLiNER inference, chunking and overlap handling.
@@ -297,3 +345,14 @@ python -m pytest -q
 - `scripts/`: the optional GLiNER scripts listed above.
 
 Files you want to keep private can go in `samples/real/`, which is ignored by git.
+## Model documentation and provenance
+
+- [Architecture and Method](Architecture.md) — detailed inference architectures,
+  fine-tuning process, data handling, evaluation caveats, and both diagrams.
+- [Flair OntoNotes Large model card](https://huggingface.co/flair/ner-english-ontonotes-large).
+- [GLiNER medium-v2.1 model card](https://huggingface.co/urchade/gliner_medium-v2.1).
+- [NuNER dataset card](https://huggingface.co/datasets/numind/NuNER).
+
+The timings, experiment counts, thresholds, and F1 values in this README are the
+**recorded results of this project**. They were preserved during this documentation
+update; no benchmarks were rerun.
